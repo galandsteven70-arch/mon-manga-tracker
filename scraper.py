@@ -1,4 +1,3 @@
-# Futur scraper
 import os
 import json
 import requests
@@ -6,64 +5,65 @@ from bs4 import BeautifulSoup
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# 1. Connexion sécurisée à Firebase
+# 1. Connexion à Firebase
 if not firebase_admin._apps:
-    # Récupération de la clé secrète que tu as enregistrée dans GitHub Settings
     service_account_info = json.loads(os.environ.get('FIREBASE_SERVICE_ACCOUNT'))
     cred = credentials.Certificate(service_account_info)
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
 
-# 2. Configuration pour Scan-Manga
-URL_BASE = "https://m.scan-manga.com/derniers-chapitres-ajoutes.html"
-HEADERS = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1'}
+# Configuration Navigation
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
 
 def run_scraper():
-    # On récupère tes mangas dans Firebase
     mangas_ref = db.collection('mangas')
     mangas = mangas_ref.stream()
-
-    # On va lire les dernières sorties sur le site
-    print("Vérification des sorties sur Scan-Manga...")
-    response = requests.get(URL_BASE, headers=HEADERS)
-    soup = BeautifulSoup(response.text, 'html.parser')
 
     for m in mangas:
         m_data = m.to_dict()
         m_id = m.id
         nom_manga = m_data.get('titre')
+        url_fiche = m_data.get('url_manga') # Le lien direct vers la page du manga
         dernier_connu = m_data.get('dernier_chapitre', 0)
 
-        # Recherche ultra-flexible du lien
-        link_tag = None
-        for a in soup.find_all('a'):
-            # On compare le titre sans espaces inutiles et en minuscule
-            if a.text and nom_manga.lower().strip() in a.text.lower():
-                link_tag = a
-                break
-        
-        if link_tag:
-            # On cherche le chapitre dans le même bloc (div)
-            parent = link_tag.find_parent('div')
-            # Scan-Manga utilise souvent la classe 'chapitre' ou un texte contenant 'Ch.'
-            chapitre_span = parent.find('span', class_='chapitre') if parent else None
+        if not url_fiche:
+            print(f"⚠️ Pas d'URL fiche pour {nom_manga}. Ajoute le champ 'url_manga' dans Firebase.")
+            continue
 
+        print(f"🔍 Vérification de : {nom_manga}...")
+        try:
+            response = requests.get(url_fiche, headers=HEADERS)
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # On cherche les spans avec la classe 'chapitre' (structure Scan-Manga)
+            liste_chapitres = soup.find_all('span', class_='chapitre')
             
-            if chapitre_span:
-                # On extrait juste le numéro (ex: "1120")
-                nouveau_txt = ''.join(filter(lambda x: x.isdigit() or x == '.', chapitre_span.text))
+            if liste_chapitres:
+                # On prend le premier de la liste (le plus récent en haut)
+                texte_chap = liste_chapitres[0].get_text()
+                # On extrait le nombre (ex: "Chapitre 299" -> 299)
+                nouveau_txt = ''.join(filter(lambda x: x.isdigit() or x == '.', texte_chap))
                 nouveau_chap = float(nouveau_txt) if nouveau_txt else 0
 
-                # Si le numéro est plus grand que celui en base de données -> MAJ !
                 if nouveau_chap > dernier_connu:
-                    print(f"Update trouvé pour {nom_manga} : Chapitre {nouveau_chap}")
+                    print(f"✨ MAJ TROUVÉE : {nom_manga} (Chapitre {nouveau_chap})")
+                    
+                    # On cherche le lien du chapitre (souvent le parent <a>)
+                    parent_link = liste_chapitres[0].find_parent('a')
+                    lien_final = "https://m.scan-manga.com" + parent_link['href'] if parent_link else url_fiche
+                    
                     mangas_ref.document(m_id).update({
                         'dernier_chapitre': nouveau_chap,
-                        'lien_chapitre': "https://m.scan-manga.com" + link_tag['href']
+                        'lien_chapitre': lien_final
                     })
                 else:
-                    print(f"Pas de nouveau chapitre pour {nom_manga}.")
+                    print(f"✅ {nom_manga} est déjà à jour (Chapitre {nouveau_chap}).")
+            else:
+                print(f"❌ Impossible de trouver les chapitres sur la page de {nom_manga}.")
+                
+        except Exception as e:
+            print(f"🔥 Erreur sur {nom_manga}: {e}")
 
 if __name__ == "__main__":
     run_scraper()
