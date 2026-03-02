@@ -14,10 +14,12 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 
-# Configuration Navigation (Simule un vrai navigateur PC)
+# Configuration pour simuler un humain sur un navigateur récent
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Referer': 'https://www.google.com/'
 }
 
 def run_scraper():
@@ -29,71 +31,67 @@ def run_scraper():
         m_id = m.id
         nom_manga = m_data.get('titre')
         url_fiche = m_data.get('url_manga')
-        dernier_connu = m_data.get('dernier_chapitre', 0)
+        
+        # On s'assure que dernier_connu est bien un nombre pour la comparaison
+        try:
+            dernier_connu = float(m_data.get('dernier_chapitre', 0))
+        except:
+            dernier_connu = 0.0
 
         if not url_fiche:
-            print(f"⚠️ Pas d'URL fiche pour {nom_manga}")
+            print(f"⚠️ URL manquante pour {nom_manga}")
             continue
 
-        print(f"🔍 Scan de : {nom_manga}...")
+        print(f"🔍 Scan précis de : {nom_manga} (Format attendu: Ch. XXX)")
         try:
-            response = requests.get(url_fiche, headers=HEADERS, timeout=15)
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            nouveau_chap = 0
-            lien_final = url_fiche
-
-            # --- STRATÉGIE BASÉE SUR TES CAPTURES D'ÉCRAN ---
-            # On cherche les <div class="chapitre_nom">
-            blocs_chapitres = soup.find_all('div', class_='chapitre_nom')
+            response = requests.get(url_fiche, headers=HEADERS, timeout=25)
+            html_content = response.text
             
-            if not blocs_chapitres:
-                # Plan B : Si la classe n'est pas trouvée, on cherche tous les liens
-                blocs_chapitres = soup.find_all('a')
-
-            for bloc in blocs_chapitres:
-                # Si c'est un div, on cherche le lien <a> à l'intérieur
-                lien_a = bloc if bloc.name == 'a' else bloc.find('a')
+            # --- REGEX SPÉCIFIQUE "Ch. 299" ---
+            # Cherche "Ch." suivi d'un espace optionnel, puis un nombre (entier ou décimal)
+            pattern = r"Ch\.\s*(\d+(?:\.\d+)?)"
+            trouvailles = re.findall(pattern, html_content, re.IGNORECASE)
+            
+            if trouvailles:
+                # On convertit les résultats en nombres flottants
+                liste_chapitres = [float(x) for x in trouvailles]
+                nouveau_chap = max(liste_chapitres)
                 
-                if lien_a:
-                    texte = lien_a.get_text().strip()
-                    href = lien_a.get('href', '')
+                print(f"📈 Trouvé sur le site : {nouveau_chap} | Connu Firebase : {dernier_connu}")
 
-                    # On cherche "Chapitre" ou "Ch." dans le texte
-                    if "chapitre" in texte.lower() or "ch." in texte.lower():
-                        # Extraction du numéro (ex: "Chapitre 299" -> 299)
-                        nombres = re.findall(r"(\d+\.?\d*)", texte)
-                        if nombres:
-                            num_found = float(nombres[0])
-                            
-                            # Le premier trouvé est le plus récent
-                            if nouveau_chap == 0:
-                                nouveau_chap = num_found
-                                # Construction de l'URL propre
+                if nouveau_chap > dernier_connu:
+                    print(f"✨ MISE À JOUR DÉTECTÉE ! {dernier_connu} -> {nouveau_chap}")
+                    
+                    # On cherche le lien qui contient le numéro (ex: "299")
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    lien_final = url_fiche
+                    num_str = str(int(nouveau_chap)) if nouveau_chap.is_integer() else str(nouveau_chap)
+                    
+                    for a in soup.find_all('a'):
+                        if num_str in a.get_text():
+                            href = a.get('href', '')
+                            if href:
                                 if href.startswith('http'):
                                     lien_final = href
-                                elif href.startswith('/'):
-                                    lien_final = "https://www.scan-manga.com" + href
                                 else:
-                                    lien_final = url_fiche
+                                    lien_final = "https://www.scan-manga.com" + href
                                 break
 
-            # --- MISE À JOUR FIREBASE ---
-            if nouveau_chap > 0:
-                # Important : Convertir dernier_connu en float au cas où c'est un entier
-                if nouveau_chap > float(dernier_connu):
-                    print(f"✨ MAJ DÉTECTÉE : {nom_manga} ({dernier_connu} -> {nouveau_chap})")
+                    # Envoi vers Firebase
                     mangas_ref.document(m_id).update({
                         'dernier_chapitre': nouveau_chap,
                         'lien_chapitre': lien_final
                     })
                 else:
-                    print(f"✅ {nom_manga} est déjà à jour (Trouvé: {nouveau_chap} / Connu: {dernier_connu})")
+                    print(f"✅ {nom_manga} est déjà à jour.")
             else:
-                print(f"❌ Impossible d'extraire un numéro sur la page de {nom_manga}.")
+                print(f"❌ Aucun 'Ch. XXX' trouvé dans le texte. Taille HTML reçue : {len(html_content)}")
+                # Si le HTML est suspectement petit (ex: < 10000), le site nous bloque
+                if len(html_content) < 8000:
+                    print("⚠️ Le site semble bloquer l'accès (protection anti-bot).")
 
         except Exception as e:
-            print(f"🔥 Erreur sur {nom_manga}: {e}")
+            print(f"🔥 Erreur technique : {e}")
 
 if __name__ == "__main__":
     run_scraper()
