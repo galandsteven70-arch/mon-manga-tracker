@@ -36,29 +36,39 @@ def run_scraper():
             response = requests.get(url_fiche, headers=HEADERS)
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # On cherche les spans avec la classe 'chapitre' (structure Scan-Manga)
-            liste_chapitres = soup.find_all('span', class_='chapitre')
-            
-            if liste_chapitres:
-                # On prend le premier de la liste (le plus récent en haut)
-                texte_chap = liste_chapitres[0].get_text()
-                # On extrait le nombre (ex: "Chapitre 299" -> 299)
-                nouveau_txt = ''.join(filter(lambda x: x.isdigit() or x == '.', texte_chap))
-                nouveau_chap = float(nouveau_txt) if nouveau_txt else 0
+            # Sur ta photo, les chapitres sont dans des liens <a> 
+            # On cherche tous les liens qui contiennent "Chapitre"
+            nouveau_chap = 0
+            lien_final = url_fiche
 
-                if nouveau_chap > dernier_connu:
-                    print(f"✨ MAJ TROUVÉE : {nom_manga} (Chapitre {nouveau_chap})")
-                    
-                    # On cherche le lien du chapitre (souvent le parent <a>)
-                    parent_link = liste_chapitres[0].find_parent('a')
-                    lien_final = "https://m.scan-manga.com" + parent_link['href'] if parent_link else url_fiche
-                    
-                    mangas_ref.document(m_id).update({
-                        'dernier_chapitre': nouveau_chap,
-                        'lien_chapitre': lien_final
-                    })
-                else:
-                    print(f"✅ {nom_manga} est déjà à jour (Chapitre {nouveau_chap}).")
+            for a in soup.find_all('a'):
+                texte = a.get_text().strip()
+                if "Chapitre" in texte:
+                    # On extrait le numéro (ex: "Chapitre 299" -> 299)
+                    try:
+                        num_str = texte.replace("Chapitre", "").strip().split()[0]
+                        num_found = float(num_str)
+                        
+                        # Le premier qu'on trouve est le plus haut dans la liste (le plus récent)
+                        if nouveau_chap == 0:
+                            nouveau_chap = num_found
+                            # On récupère le lien "Lire en ligne" qui est juste à côté
+                            # Ou on prend directement le lien du chapitre
+                            lien_final = a['href']
+                            if not lien_final.startswith('http'):
+                                lien_final = "https://m.scan-manga.com" + lien_final
+                            break 
+                    except:
+                        continue
+
+            if nouveau_chap > dernier_connu:
+                print(f"✨ MAJ TROUVÉE : {nom_manga} (Chapitre {nouveau_chap})")
+                mangas_ref.document(m_id).update({
+                    'dernier_chapitre': nouveau_chap,
+                    'lien_chapitre': lien_final
+                })
+            else:
+                print(f"✅ {nom_manga} est déjà à jour (Chapitre {nouveau_chap}).")
             else:
                 print(f"❌ Impossible de trouver les chapitres sur la page de {nom_manga}.")
                 
