@@ -35,13 +35,20 @@ def run_scraper():
         nom_manga = m_data.get('titre')
         dernier_connu = m_data.get('dernier_chapitre', 0)
 
-        # On cherche le nom du manga dans les liens de la page
-        link_tag = soup.find('a', string=lambda t: t and nom_manga.lower() in t.lower())
+        # Recherche ultra-flexible du lien
+        link_tag = None
+        for a in soup.find_all('a'):
+            # On compare le titre sans espaces inutiles et en minuscule
+            if a.text and nom_manga.lower().strip() in a.text.lower():
+                link_tag = a
+                break
         
         if link_tag:
-            # On remonte au bloc parent pour trouver le numéro du chapitre
+            # On cherche le chapitre dans le même bloc (div)
             parent = link_tag.find_parent('div')
+            # Scan-Manga utilise souvent la classe 'chapitre' ou un texte contenant 'Ch.'
             chapitre_span = parent.find('span', class_='chapitre') if parent else None
+
             
             if chapitre_span:
                 # On extrait juste le numéro (ex: "1120")
